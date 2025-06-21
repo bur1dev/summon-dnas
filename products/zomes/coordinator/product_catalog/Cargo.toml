@@ -1,0 +1,13 @@
+[package]
+name = "products"
+version = "0.0.1"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+name = "products"
+
+[dependencies]
+hdk = { workspace = true }
+serde = { workspace = true }
+products_integrity = { path = "../../integrity/product_catalog" }

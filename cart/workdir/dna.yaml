@@ -1,0 +1,30 @@
+manifest_version: '1'
+name: cart
+integrity:
+  network_seed: null
+  properties: null
+  zomes:  
+  - name: cart_integrity
+    hash: null
+    bundled: '../../../target/wasm32-unknown-unknown/release/cart_integrity.wasm'
+    dependencies: null
+    dylib: null
+  - name: profiles_integrity
+    hash: null
+    bundled: '../../../target/wasm32-unknown-unknown/release/profiles_integrity.wasm'
+    dependencies: null
+    dylib: null
+coordinator:
+  zomes:
+  - name: cart
+    hash: null
+    bundled: '../../../target/wasm32-unknown-unknown/release/cart.wasm'
+    dependencies:
+    - name: cart_integrity
+    dylib: null
+  - name: profiles
+    hash: null
+    bundled: '../../../target/wasm32-unknown-unknown/release/profiles.wasm'
+    dependencies:
+    - name: profiles_integrity
+    dylib: null
