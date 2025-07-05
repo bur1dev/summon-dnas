@@ -15,6 +15,7 @@ pub struct Product {
     pub sold_by: Option<String>,
     #[serde(rename = "productId")]
     pub product_id: Option<String>,
+    pub upc: Option<String>,
     pub embedding: Option<Vec<f32>>,
     pub brand: Option<String>,
     pub is_organic: Option<bool>,

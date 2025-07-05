@@ -23,5 +23,5 @@ pub enum LinkTypes {
     AgentToCheckedOutCart,
     AgentToAddress,
     AgentToPrivateCart,
-    OrderToPrivateAddress,
+    AllOrdersToCheckedOutCart,
 }

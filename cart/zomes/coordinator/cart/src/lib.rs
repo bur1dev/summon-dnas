@@ -7,6 +7,7 @@ mod cart;
 #[derive(Serialize, Deserialize, Debug)]
 pub struct AddToPrivateCartInput {
     pub product_id: String,
+    pub upc: Option<String>,
     pub product_name: String,
     pub product_image_url: Option<String>,
     pub price_at_checkout: f64,
@@ -18,6 +19,7 @@ pub struct AddToPrivateCartInput {
 #[derive(Serialize, Deserialize, Debug)]
 pub struct CartItemInput {
     pub product_id: String,
+    pub upc: Option<String>,
     pub product_name: String,
     pub product_image_url: Option<String>,
     pub price_at_checkout: f64,
@@ -43,8 +45,9 @@ pub struct CheckedOutCartWithHash {
 // Extended checkout input with delivery details and cart products
 #[derive(Serialize, Deserialize, Debug)]
 pub struct CheckoutCartInput {
-    pub private_address_hash: ActionHash,
+    pub delivery_address: Address,
     pub delivery_time: Option<DeliveryTimeSlot>,
+    pub delivery_instructions: Option<String>,
     pub cart_products: Option<Vec<CartProduct>>, // Added to pass cart products
 }
 
@@ -78,6 +81,18 @@ pub fn get_checked_out_carts(_: ()) -> ExternResult<Vec<CheckedOutCartWithHash>>
     cart::get_checked_out_carts_impl()
 }
 
+// NEW: Get ALL checked out carts from ALL agents (for shoppers)
+#[hdk_extern]
+pub fn get_all_checked_out_carts(_: ()) -> ExternResult<Vec<CheckedOutCartWithHash>> {
+    cart::get_all_checked_out_carts_impl()
+}
+
+// NEW: Get ALL available orders from ALL customers (for shoppers)
+#[hdk_extern]
+pub fn get_all_available_orders(_: ()) -> ExternResult<Vec<CheckedOutCartWithHash>> {
+    cart::get_all_available_orders_impl()
+}
+
 // Helper to get a single checked out cart
 #[hdk_extern]
 pub fn get_checked_out_cart(action_hash: ActionHash) -> ExternResult<Option<CheckedOutCart>> {
@@ -89,6 +104,22 @@ pub fn get_checked_out_cart(action_hash: ActionHash) -> ExternResult<Option<Chec
 pub fn return_to_shopping(cart_hash: ActionHash) -> ExternResult<()> {
     cart::return_to_shopping_impl(cart_hash)
 }
+
+// ============================================================================
+// FAKE DATA GENERATION FOR TESTING - REMOVE FOR PRODUCTION
+// ============================================================================
+// This function creates a single fake order with real butter UPC for testing
+// the barcode scanner functionality. Remove this entire section when ready
+// to use real data only.
+
+#[hdk_extern]
+pub fn generate_fake_order_with_butter(_: ()) -> ExternResult<ActionHash> {
+    cart::generate_fake_order_with_butter_impl()
+}
+
+// ============================================================================
+// END FAKE DATA SECTION - REMOVE FOR PRODUCTION
+// ============================================================================
 
 // Address-related functions
 #[hdk_extern]
@@ -117,14 +148,3 @@ pub fn delete_address(action_hash: ActionHash) -> ExternResult<ActionHash> {
 }
 
 
-// NEW: Customer address retrieval for orders
-#[hdk_extern]
-pub fn get_address_for_order(order_hash: ActionHash) -> ExternResult<Address> {
-    cart::get_address_for_order_impl(order_hash)
-}
-
-// SPECIALIZED: Create order address copy - for immutable shipping labels only
-#[hdk_extern]
-pub fn create_order_address_copy(address: Address) -> ExternResult<ActionHash> {
-    address::create_order_address_copy_impl(address)
-}

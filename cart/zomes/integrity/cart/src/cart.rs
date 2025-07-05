@@ -1,5 +1,5 @@
 use hdi::prelude::*;
-use crate::DeliveryTimeSlot;
+use crate::{DeliveryTimeSlot, Address};
 
 // For storing checked out carts
 #[hdk_entry_helper]
@@ -11,9 +11,9 @@ pub struct CheckedOutCart {
     pub created_at: u64,
     pub status: String, // "processing", "completed", "returned", "claimed", "awaiting_shopper"
     pub delivery_time: Option<DeliveryTimeSlot>,
-    // New fields for secure workflow
     pub customer_pub_key: AgentPubKey,
-    pub general_location: Option<String>,
+    pub delivery_address: Address,
+    pub delivery_instructions: Option<String>,
 }
 
 #[hdk_entry_helper]
@@ -22,6 +22,7 @@ pub struct CartProduct {
     // A unique, permanent string identifier for the product.
     // This will be created on the frontend as `${group_hash}:${product_index}`.
     pub product_id: String,
+    pub upc: Option<String>,
 
     // --- ALL DATA BELOW IS A SNAPSHOT ---
     pub product_name: String,

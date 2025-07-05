@@ -10,4 +10,5 @@ name = "products"
 [dependencies]
 hdk = { workspace = true }
 serde = { workspace = true }
+holochain_serialized_bytes = { workspace = true }
 products_integrity = { path = "../../integrity/product_catalog" }

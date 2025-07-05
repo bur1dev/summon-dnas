@@ -20,6 +20,7 @@ pub(crate) fn replace_private_cart_impl(input: ReplacePrivateCartInput) -> Exter
     // Convert input items directly to CartProduct - no hash decoding needed
     let cart_items: Vec<CartProduct> = input.items.into_iter().map(|item| CartProduct {
         product_id: item.product_id,
+        upc: item.upc,
         product_name: item.product_name,
         product_image_url: item.product_image_url,
         price_at_checkout: item.price_at_checkout,
@@ -171,6 +172,7 @@ pub(crate) fn add_to_private_cart_impl(input: AddToPrivateCartInput) -> ExternRe
         } else {
             cart.items.push(CartProduct {
                 product_id: input.product_id,
+                upc: input.upc,
                 product_name: input.product_name,
                 product_image_url: input.product_image_url,
                 price_at_checkout: input.price_at_checkout,
@@ -225,7 +227,7 @@ pub(crate) fn checkout_cart_impl(input: CheckoutCartInput) -> ExternResult<Actio
         )));
     }
 
-    // Create a checked out cart entry (public order) with private address link
+    // Create a checked out cart entry (public order) with address included
     let checked_out_cart = CheckedOutCart {
         id: current_time.to_string(),
         products: cart_products,
@@ -234,13 +236,12 @@ pub(crate) fn checkout_cart_impl(input: CheckoutCartInput) -> ExternResult<Actio
         status: "processing".to_string(), // Standard processing status
         delivery_time: input.delivery_time,
         customer_pub_key: agent_pub_key.clone(), // Keep for future shopper workflow
-        general_location: None, // Not needed for customer-only workflow
+        delivery_address: input.delivery_address,
+        delivery_instructions: input.delivery_instructions,
     };
-    warn!("checkout_cart_impl: Creating CheckedOutCart with status: {}", checked_out_cart.status);
 
     // Create the public order entry
     let cart_hash = create_entry(EntryTypes::CheckedOutCart(checked_out_cart))?;
-    warn!("checkout_cart_impl: Created CheckedOutCart entry with hash: {:?}", cart_hash);
 
     // Link customer to this order
     create_link(
@@ -250,14 +251,16 @@ pub(crate) fn checkout_cart_impl(input: CheckoutCartInput) -> ExternResult<Actio
         LinkTag::new("customer"),
     )?;
 
-    // Create private link from order to address (key security feature)
+    // NEW: Create global anchor link for shopper discovery
+    let all_orders_path = Path::try_from("all_orders")?;
+    let path_hash = all_orders_path.path_entry_hash()?;
     create_link(
+        path_hash,
         cart_hash.clone(),
-        input.private_address_hash,
-        LinkTypes::OrderToPrivateAddress,
-        LinkTag::new(""),
+        LinkTypes::AllOrdersToCheckedOutCart,
+        LinkTag::new("available"),
     )?;
-    warn!("checkout_cart_impl: Created private link from order to address");
+
 
     // Clear the private cart after successful checkout
     let empty_cart = PrivateCart {
@@ -331,6 +334,102 @@ pub(crate) fn get_checked_out_carts_impl() -> ExternResult<Vec<CheckedOutCartWit
     warn!("get_checked_out_carts_impl: Returning {} filtered carts.", checked_out_carts.len());
 
     Ok(checked_out_carts)
+}
+
+// NEW: Implementation for shoppers to get ALL checked out carts from ALL agents
+pub(crate) fn get_all_checked_out_carts_impl() -> ExternResult<Vec<CheckedOutCartWithHash>> {
+    warn!("get_all_checked_out_carts_impl: Using path-based approach like products DNA");
+
+    // Use the SAME pattern as get_all_available_orders_impl
+    let all_orders_path = Path::try_from("all_orders")?;
+    let path_hash = all_orders_path.path_entry_hash()?;
+    
+    warn!("get_all_checked_out_carts_impl: Querying path 'all_orders' for all cart links");
+
+    // Query all links from the global path to checked out carts (FIXED LinkType)
+    let links = get_links(
+        GetLinksInputBuilder::try_new(path_hash, LinkTypes::AllOrdersToCheckedOutCart)?.build(),
+    )?;
+    warn!("get_all_checked_out_carts_impl: Found {} links from global path to checked out carts", links.len());
+
+    let mut checked_out_carts = Vec::new();
+
+    for link in links {
+        if let Some(cart_hash) = link.target.clone().into_action_hash() {
+            warn!("get_all_checked_out_carts_impl: Processing cart link with target hash: {:?}", cart_hash);
+            match get_checked_out_cart_impl(cart_hash.clone())? {
+                Some(cart) => {
+                    warn!("get_all_checked_out_carts_impl: Retrieved cart with hash {:?}, status: '{}'", cart_hash, cart.status);
+                    // Filter out returned carts, same as original function
+                    if cart.status != "returned" {
+                        warn!("get_all_checked_out_carts_impl: Cart status is NOT 'returned', adding to results.");
+                        checked_out_carts.push(CheckedOutCartWithHash {
+                            cart_hash,
+                            cart,
+                        });
+                    } else {
+                        warn!("get_all_checked_out_carts_impl: Cart status IS 'returned', filtering out.");
+                    }
+                }
+                None => {
+                    warn!("get_all_checked_out_carts_impl: Could not retrieve cart with hash: {:?}", cart_hash);
+                }
+            }
+        } else {
+            warn!("get_all_checked_out_carts_impl: Link target is not an ActionHash: {:?}", link.target);
+        }
+    }
+
+    // Sort by creation time (newest first), same as original function
+    checked_out_carts.sort_by(|a, b| b.cart.created_at.cmp(&a.cart.created_at));
+    warn!("get_all_checked_out_carts_impl: Returning {} filtered carts from global path", checked_out_carts.len());
+
+    Ok(checked_out_carts)
+}
+
+// NEW: Implementation for shoppers to get ALL available orders from ALL customers
+pub(crate) fn get_all_available_orders_impl() -> ExternResult<Vec<CheckedOutCartWithHash>> {
+    warn!("get_all_available_orders_impl: Starting to get all available orders for shoppers");
+
+    // Query from global "all_orders" anchor
+    let all_orders_path = Path::try_from("all_orders")?;
+    let path_hash = all_orders_path.path_entry_hash()?;
+    
+    warn!("get_all_available_orders_impl: Querying path 'all_orders' for available orders");
+
+    // Query all links from the global anchor to available orders
+    let links = get_links(
+        GetLinksInputBuilder::try_new(path_hash, LinkTypes::AllOrdersToCheckedOutCart)?.build(),
+    )?;
+    warn!("get_all_available_orders_impl: Found {} links from all_orders anchor", links.len());
+
+    let mut available_orders = Vec::new();
+
+    for link in links {
+        if let Some(cart_hash) = link.target.clone().into_action_hash() {
+            warn!("get_all_available_orders_impl: Processing order link with target hash: {:?}", cart_hash);
+            match get_checked_out_cart_impl(cart_hash.clone())? {
+                Some(cart) => {
+                    warn!("get_all_available_orders_impl: Retrieved order with hash {:?}, status: '{}'", cart_hash, cart.status);
+                    available_orders.push(CheckedOutCartWithHash {
+                        cart_hash,
+                        cart,
+                    });
+                }
+                None => {
+                    warn!("get_all_available_orders_impl: Could not retrieve order details for hash: {:?}", cart_hash);
+                }
+            }
+        } else {
+            warn!("get_all_available_orders_impl: Link target is not an ActionHash: {:?}", link.target);
+        }
+    }
+
+    // Sort by creation time (newest first)
+    available_orders.sort_by(|a, b| b.cart.created_at.cmp(&a.cart.created_at));
+    warn!("get_all_available_orders_impl: Returning {} available orders", available_orders.len());
+
+    Ok(available_orders)
 }
 
 // Implementation of get_checked_out_cart - used by get_checked_out_carts_impl
@@ -412,6 +511,31 @@ pub(crate) fn return_to_shopping_impl(cart_hash: ActionHash) -> ExternResult<()>
         }
     };
     
+    // Delete global discovery link (AllOrdersToCheckedOutCart)
+    warn!("Deleting global discovery link for returned order");
+    let all_orders_path = Path::try_from("all_orders")?;
+    let path_hash = all_orders_path.path_entry_hash()?;
+    
+    let global_links = get_links(
+        GetLinksInputBuilder::try_new(path_hash, LinkTypes::AllOrdersToCheckedOutCart)?.build(),
+    )?;
+    
+    let mut found_global_link = false;
+    for link in global_links {
+        if let Some(target) = link.target.clone().into_action_hash() {
+            if target == cart_hash {
+                warn!("Deleting global discovery link: {:?}", link.create_link_hash);
+                found_global_link = true;
+                delete_link(link.create_link_hash)?;
+                break; // Only one global link per order
+            }
+        }
+    }
+    
+    if !found_global_link {
+        warn!("WARNING: No global discovery link found for cart hash: {:?}", cart_hash);
+    }
+    
     // Find and delete link to old cart hash
     warn!("Getting links from agent to checked out cart");
     let links = get_links(
@@ -446,47 +570,119 @@ pub(crate) fn return_to_shopping_impl(cart_hash: ActionHash) -> ExternResult<()>
     Ok(())
 }
 
-// Implementation of get_address_for_order - customer retrieves their own delivery address
-pub(crate) fn get_address_for_order_impl(order_hash: ActionHash) -> ExternResult<Address> {
-    let agent_pub_key = agent_info()?.agent_initial_pubkey;
-    warn!("get_address_for_order_impl: Customer {:?} retrieving address for order {:?}", agent_pub_key, order_hash);
+// ============================================================================
+// FAKE DATA GENERATION FOR TESTING - REMOVE FOR PRODUCTION
+// ============================================================================
+// This function creates a single fake order with real butter UPC (767707001678)
+// for testing the barcode scanner functionality. Remove this entire section
+// when ready to use real data only.
+
+pub(crate) fn generate_fake_order_with_butter_impl() -> ExternResult<ActionHash> { 
+    warn!("🚨🚨🚨 FAKE DATA VERSION 2.0 - DNA UPDATED WITH SYMLINK 🚨🚨🚨");
+    warn!("FAKE DATA: Creating fake order with real butter UPC for testing");
     
-    // First, verify this order belongs to the current customer
-    let order = match get_checked_out_cart_impl(order_hash.clone())? {
-        Some(order) => order,
-        None => return Err(wasm_error!(WasmErrorInner::Guest("Order not found".to_string()))),
+    // Create realistic fake delivery address
+    let fake_address = Address {
+        street: "123 Main Street".to_string(),
+        unit: None,
+        city: "Los Angeles".to_string(),
+        state: "CA".to_string(),
+        zip: "90210".to_string(),
+        lat: 34.0522, // Los Angeles latitude
+        lng: -118.2437, // Los Angeles longitude
+        is_default: true,
+        label: Some("FAKE TEST ADDRESS".to_string()),
     };
     
-    if order.customer_pub_key != agent_pub_key {
-        return Err(wasm_error!(WasmErrorInner::Guest("Order does not belong to this customer".to_string())));
-    }
+    // Create fake delivery time slot
+    let fake_delivery_time = DeliveryTimeSlot {
+        date: 1735171200, // Unix timestamp for 2024-12-25 (Christmas day for easy identification)
+        time_slot: "2pm-4pm".to_string(), // Combined time slot format
+    };
     
-    // Get links from order to private address
-    let links = get_links(
-        GetLinksInputBuilder::try_new(order_hash.clone(), LinkTypes::OrderToPrivateAddress)?.build(),
-    )?;
+    // Create multiple CartProducts for a more realistic order
+    let fake_cart_products = vec![
+        // Product 1: Butter (original - EXACTLY AS IT WAS)
+        CartProduct {
+            product_id: "FAKE_BUTTER_001".to_string(),
+            upc: Some("767707001678".to_string()), // REAL UPC from your butter package
+            product_name: "Kerrygold Irish Butter - 8oz".to_string(),
+            product_image_url: Some("https://prodcdn2.kerrygoldusa.com/wp-content/uploads/2017/09/Kerrygold-Naturally-Softer-Pure-Irish-Butter-Front.png".to_string()),
+            price_at_checkout: 4.99,
+            promo_price: None,
+            quantity: 1.0,
+            timestamp: sys_time()?.as_micros() as u64,
+            note: Some("FAKE ORDER FOR TESTING - UPC: 767707001678".to_string()),
+        },
+        // Product 2: Milk
+        CartProduct {
+            product_id: "FAKE_MILK_002".to_string(),
+            upc: Some("041220071258".to_string()), // Random UPC
+            product_name: "Organic Whole Milk - 1 Gallon".to_string(),
+            product_image_url: None,
+            price_at_checkout: 5.49,
+            promo_price: Some(4.99),
+            quantity: 2.0,
+            timestamp: sys_time()?.as_micros() as u64,
+            note: Some("Check expiration date please".to_string()),
+        },
+        // Product 3: Bread
+        CartProduct {
+            product_id: "FAKE_BREAD_003".to_string(),
+            upc: Some("072250015646".to_string()), // Random UPC
+            product_name: "Sourdough Bread - 24oz Loaf".to_string(),
+            product_image_url: None,
+            price_at_checkout: 3.29,
+            promo_price: None,
+            quantity: 1.0,
+            timestamp: sys_time()?.as_micros() as u64,
+            note: Some("Softest loaf available".to_string()),
+        },
+        // Product 4: Eggs
+        CartProduct {
+            product_id: "FAKE_EGGS_004".to_string(),
+            upc: Some("011110085344".to_string()), // Random UPC
+            product_name: "Free Range Large Eggs - 12 count".to_string(),
+            product_image_url: None,
+            price_at_checkout: 6.99,
+            promo_price: None,
+            quantity: 1.0,
+            timestamp: sys_time()?.as_micros() as u64,
+            note: Some("Brown eggs preferred if available".to_string()),
+        },
+        // Product 5: Bananas
+        CartProduct {
+            product_id: "FAKE_BANANAS_005".to_string(),
+            upc: Some("033383003931".to_string()), // Random UPC
+            product_name: "Organic Bananas - 3 lbs".to_string(),
+            product_image_url: None,
+            price_at_checkout: 2.99,
+            promo_price: None,
+            quantity: 1.0,
+            timestamp: sys_time()?.as_micros() as u64,
+            note: Some("Not too ripe please, yellow with slight green".to_string()),
+        },
+    ];
     
-    if links.is_empty() {
-        return Err(wasm_error!(WasmErrorInner::Guest("No address found for this order".to_string())));
-    }
+    // Create checkout input using our fake data
+    let checkout_input = CheckoutCartInput {
+        delivery_address: fake_address,
+        delivery_time: Some(fake_delivery_time),
+        delivery_instructions: Some("FAKE ORDER - Ring doorbell twice for testing".to_string()),
+        cart_products: Some(fake_cart_products),
+    };
     
-    // Get the address from the first link
-    let address_link = &links[0];
-    if let Some(address_hash) = address_link.target.clone().into_action_hash() {
-        match get(address_hash, GetOptions::default())? {
-            Some(record) => {
-                let address: Address = record
-                    .entry()
-                    .to_app_option()
-                    .map_err(|e| wasm_error!(WasmErrorInner::Guest(format!("Failed to deserialize address: {}", e))))?
-                    .ok_or(wasm_error!(WasmErrorInner::Guest("Expected address entry".to_string())))?;
-                
-                warn!("get_address_for_order_impl: Successfully retrieved address for customer");
-                Ok(address)
-            }
-            None => Err(wasm_error!(WasmErrorInner::Guest("Address record not found".to_string()))),
-        }
-    } else {
-        Err(wasm_error!(WasmErrorInner::Guest("Invalid address hash in link".to_string())))
-    }
+    // Use the existing checkout function to create the order properly
+    let order_hash = checkout_cart_impl(checkout_input)?;
+    
+    warn!("FAKE DATA: Created fake order with hash: {:?}", order_hash);
+    warn!("FAKE DATA: Order contains butter with UPC: 767707001678");
+    warn!("FAKE DATA: Order should now appear in shopper app for testing");
+    
+    Ok(order_hash)
 }
+
+// ============================================================================
+// END FAKE DATA SECTION - REMOVE FOR PRODUCTION
+// ============================================================================
+

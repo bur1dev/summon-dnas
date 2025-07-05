@@ -130,12 +130,3 @@ pub fn delete_address_impl(action_hash: ActionHash) -> ExternResult<ActionHash> 
     Ok(action_hash)
 }
 
-// SPECIALIZED: Create order address copy - creates private address without linking to agent
-// This creates immutable "shipping label" addresses 
-pub fn create_order_address_copy_impl(address: Address) -> ExternResult<ActionHash> {
-    // Create the private address entry - NO agent linking
-    let address_hash = create_entry(EntryTypes::Address(address))?;
-    
-    // Return hash for OrderToPrivateAddress linking in checkout
-    Ok(address_hash)
-}
