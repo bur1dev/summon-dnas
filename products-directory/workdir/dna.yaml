@@ -1,0 +1,19 @@
+manifest_version: '1'
+name: products_directory
+integrity:
+  network_seed: null
+  properties: null
+  zomes:
+  - name: products_directory_integrity
+    hash: null
+    bundled: '../../../summon/target/wasm32-unknown-unknown/release/products_directory_integrity.wasm'
+    dependencies: null
+    dylib: null
+coordinator:
+  zomes:
+  - name: products_directory
+    hash: null
+    bundled: '../../../summon/target/wasm32-unknown-unknown/release/products_directory.wasm'
+    dependencies:
+    - name: products_directory_integrity
+    dylib: null

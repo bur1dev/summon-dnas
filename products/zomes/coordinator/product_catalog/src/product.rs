@@ -3,6 +3,13 @@ use products_integrity::*;
 use std::collections::HashMap;
 use crate::utils::concurrent_get_records;
 use crate::products_by_category::GetProductsParams;
+
+// Helper function to get cell_id for debugging
+fn get_cell_id_debug_info() -> ExternResult<String> {
+    let dna_info = dna_info()?;
+    let agent_info = agent_info()?;
+    Ok(format!("{:?}:{:?}", dna_info.hash, agent_info.agent_initial_pubkey))
+}
 // Constants remain the same
 pub const PRODUCTS_PER_GROUP: usize = 1000; // Maximum products per group
 
@@ -68,6 +75,9 @@ for (_i, additional) in input.additional_categorizations.iter().enumerate() {
 }
 
 fn create_links_for_group(group_hash: &ActionHash, paths: Vec<Path>, product_count: usize) -> ExternResult<()> {
+    let cell_id = get_cell_id_debug_info().unwrap_or_else(|_| "unknown".to_string());
+    warn!("📝 [WRITE] Cell ID: {} - Creating {} links for group", cell_id, paths.len());
+    
     // Convert product count to bytes for LinkTag
     let count_bytes = (product_count as u32).to_le_bytes();
     let link_tag = LinkTag::new(count_bytes.to_vec());
@@ -92,6 +102,9 @@ fn create_links_for_group(group_hash: &ActionHash, paths: Vec<Path>, product_cou
 // New function to create product groups
 #[hdk_extern]
 pub fn create_product_group(input: CreateProductGroupInput) -> ExternResult<ActionHash> {
+    let cell_id = get_cell_id_debug_info().unwrap_or_else(|_| "unknown".to_string());
+    warn!("📝 [WRITE] Cell ID: {} - Creating product group with {} products", cell_id, input.products.len());
+    
     let product_group = ProductGroup {
         category: input.category.clone(),
         subcategory: input.subcategory.clone(),
@@ -122,6 +135,9 @@ pub fn create_product_group(input: CreateProductGroupInput) -> ExternResult<Acti
 
 #[hdk_extern]
 pub fn create_product_batch(products: Vec<CreateProductInput>) -> ExternResult<Vec<Record>> {
+    let cell_id = get_cell_id_debug_info().unwrap_or_else(|_| "unknown".to_string());
+    warn!("📝 [WRITE] Cell ID: {} - Creating product batch with {} products", cell_id, products.len());
+    
     if products.is_empty() {
         return Ok(Vec::new());
     }

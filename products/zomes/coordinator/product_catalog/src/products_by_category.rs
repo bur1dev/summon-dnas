@@ -2,6 +2,13 @@ use hdk::prelude::*;
 use products_integrity::*;
 use crate::utils::concurrent_get_records;
 
+// Helper function to get cell_id debug information
+fn get_cell_id_debug_info() -> ExternResult<String> {
+    let dna_info = dna_info()?;
+    let agent_info = agent_info()?;
+    Ok(format!("{:?}:{:?}", dna_info.hash, agent_info.agent_initial_pubkey))
+}
+
 // Define the constant here or import if defined elsewhere
 // const PRODUCTS_PER_GROUP: usize = 1000;
 
@@ -41,6 +48,12 @@ fn default_limit() -> usize {
 // Modified to work with product groups and return correct total_products
 #[hdk_extern]
 pub fn get_products_by_category(params: GetProductsParams) -> ExternResult<CategorizedProducts> {
+    // Log the current cell info
+    let current_cell_info = get_cell_id_debug_info()?;
+    warn!("[get_products_by_category] Called in cell: {}", current_cell_info);
+    warn!("[get_products_by_category] Params: category={}, subcategory={:?}, product_type={:?}", 
+           params.category, params.subcategory, params.product_type);
+    
     // Determine the path based on category/subcategory/product_type
     let base_path = match (&params.subcategory, &params.product_type) {
         (Some(subcategory), Some(product_type)) => format!(
@@ -128,6 +141,11 @@ pub fn get_products_by_category(params: GetProductsParams) -> ExternResult<Categ
 
 #[hdk_extern]
 pub fn get_all_category_products(category: String) -> ExternResult<CategorizedProducts> {
+    // Log the current cell info
+    let current_cell_info = get_cell_id_debug_info()?;
+    warn!("[get_all_category_products] Called in cell: {}", current_cell_info);
+    warn!("[get_all_category_products] Category: {}", category);
+    
     let path_str = format!("categories/{}", category);
     
     let chunk_path = match Path::try_from(path_str.clone()) {
@@ -255,6 +273,11 @@ pub struct PaginatedProducts {
 
 #[hdk_extern]
 pub fn get_paginated_products_from_group(params: GroupProductsParams) -> ExternResult<PaginatedProducts> {
+    // Log the current cell info
+    let current_cell_info = get_cell_id_debug_info()?;
+    warn!("[get_paginated_products_from_group] Called in cell: {}", current_cell_info);
+    warn!("[get_paginated_products_from_group] Group hash: {:?}", params.group_hash);
+    
     // Get the product group record
      let group_record = match get(params.group_hash.clone(), GetOptions::default())? {
          Some(record) => record,

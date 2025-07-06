@@ -7,6 +7,13 @@ mod utils;
 use hdk::prelude::*;
 use products_integrity::*;
 
+// Helper function to get cell_id debug information
+fn get_cell_id_debug_info() -> ExternResult<String> {
+    let dna_info = dna_info()?;
+    let agent_info = agent_info()?;
+    Ok(format!("{:?}:{:?}", dna_info.hash, agent_info.agent_initial_pubkey))
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 struct DnaProperties {
     admin_pub_key_str: String,
@@ -25,11 +32,11 @@ fn is_admin(_: ()) -> ExternResult<bool> {
     let caller_str = caller_pub_key.to_string();
     let admin_str = properties.admin_pub_key_str.clone(); // Clone for logging if needed, or use as is.
 
-    debug!("[is_admin] Caller PubKey: {}", caller_str);
-    debug!("[is_admin] Admin PubKey from Props: {}", admin_str);
+    warn!("[is_admin] Caller PubKey: {}", caller_str);
+    warn!("[is_admin] Admin PubKey from Props: {}", admin_str);
 
     let is_match = caller_str == admin_str;
-    debug!("[is_admin] Comparison result (is_match): {}", is_match);
+    warn!("[is_admin] Comparison result (is_match): {}", is_match);
 
     Ok(is_match)
 }
@@ -37,6 +44,9 @@ fn is_admin(_: ()) -> ExternResult<bool> {
 // Called the first time a zome call is made to the cell containing this zome
 #[hdk_extern]
 pub fn init() -> ExternResult<InitCallbackResult> {
+    // Log the current cell info during initialization
+    let current_cell_info = get_cell_id_debug_info()?;
+    warn!("[init] Initializing product_catalog zome in cell: {}", current_cell_info);
     Ok(InitCallbackResult::Pass)
 }
 
