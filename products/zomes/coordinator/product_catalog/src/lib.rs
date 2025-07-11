@@ -1,7 +1,6 @@
 pub mod product;
 pub mod products_by_category;
 pub mod search;
-pub mod preference;
 mod utils;
 
 use hdk::prelude::*;
@@ -174,34 +173,3 @@ fn get_entry_for_action(action_hash: &ActionHash) -> ExternResult<Option<EntryTy
     EntryTypes::deserialize_from_type(*zome_index, *entry_index, entry)
 }
 
-// Preference-related functions
-#[derive(Serialize, Deserialize, Debug)]
-pub struct GetPreferenceInput {
-    pub group_hash: ActionHash,
-    pub product_index: u32,
-}
-
-#[hdk_extern]
-pub fn save_product_preference(preference: ProductPreference) -> ExternResult<ActionHash> {
-    preference::save_product_preference_impl(preference)
-}
-
-#[hdk_extern]
-pub fn get_product_preferences(_: ()) -> ExternResult<Vec<(ActionHash, ProductPreference)>> {
-    preference::get_product_preferences_impl()
-}
-
-#[hdk_extern]
-pub fn get_product_preference_by_product(input: GetPreferenceInput) -> ExternResult<Option<(ActionHash, ProductPreference)>> {
-    preference::get_product_preference_by_product_impl(input.group_hash, input.product_index)
-}
-
-#[hdk_extern]
-pub fn update_product_preference(input: (ActionHash, ProductPreference)) -> ExternResult<ActionHash> {
-    preference::update_product_preference_impl(input.0, input.1)
-}
-
-#[hdk_extern]
-pub fn delete_product_preference(action_hash: ActionHash) -> ExternResult<ActionHash> {
-    preference::delete_product_preference_impl(action_hash)
-}

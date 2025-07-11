@@ -1,0 +1,19 @@
+manifest_version: '1'
+name: preferences
+integrity:
+  network_seed: null
+  properties: null
+  zomes:  
+  - name: preferences_integrity
+    hash: null
+    bundled: '../../../summon/target/wasm32-unknown-unknown/release/preferences_integrity.wasm'
+    dependencies: null
+    dylib: null
+coordinator:
+  zomes:
+  - name: preferences
+    hash: null
+    bundled: '../../../summon/target/wasm32-unknown-unknown/release/preferences.wasm'
+    dependencies:
+    - name: preferences_integrity
+    dylib: null

@@ -3,16 +3,6 @@ use hdi::prelude::*;
 
 pub use product::*;
 
-// Product preference structure (moved from cart)
-#[hdk_entry_helper]
-#[derive(Clone)]
-pub struct ProductPreference {
-    pub group_hash: ActionHash,    // Reference to ProductGroup
-    pub product_index: u32,        // Index of product within the group
-    pub note: String,              // Customer note/preference
-    pub timestamp: u64,            // When this preference was last updated
-    pub is_default: bool           // If true, apply automatically
-}
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -21,14 +11,12 @@ pub struct ProductPreference {
 pub enum EntryTypes {
     Product(Product),
     ProductGroup(ProductGroup),
-    ProductPreference(ProductPreference),
 }
 
 #[derive(Serialize, Deserialize)]
 #[hdk_link_types]
 pub enum LinkTypes {
     ProductTypeToGroup,
-    AgentToPreference,
 }
 
 // Validation you perform during the genesis process. Nobody else on the network performs it, only you.
@@ -59,9 +47,6 @@ pub fn validate(op: Op) -> ExternResult<ValidateCallbackResult> {
                 EntryTypes::ProductGroup(product_group) => {
                     validate_create_product_group(EntryCreationAction::Create(action), product_group)
                 }
-                EntryTypes::ProductPreference(_product_preference) => {
-                    Ok(ValidateCallbackResult::Valid)
-                }
             },
             OpEntry::UpdateEntry {
                 app_entry, action, ..
@@ -71,9 +56,6 @@ pub fn validate(op: Op) -> ExternResult<ValidateCallbackResult> {
                 }
                 EntryTypes::ProductGroup(product_group) => {
                     validate_create_product_group(EntryCreationAction::Update(action), product_group)
-                }
-                EntryTypes::ProductPreference(product_preference) => {
-                    Ok(ValidateCallbackResult::Valid)
                 }
             },
             _ => Ok(ValidateCallbackResult::Valid),
@@ -127,19 +109,6 @@ pub fn validate(op: Op) -> ExternResult<ValidateCallbackResult> {
                             original_create_action,
                             original_product_group,
                         )
-                    }
-                    EntryTypes::ProductPreference(product_preference) => {
-                        let original_app_entry =
-                            must_get_valid_record(action.clone().original_action_address)?;
-                        let original_product_preference = match ProductPreference::try_from(original_app_entry) {
-                            Ok(entry) => entry,
-                            Err(e) => {
-                                return Ok(ValidateCallbackResult::Invalid(format!(
-                                    "Expected to get ProductPreference from Record: {e:?}"
-                                )));
-                            }
-                        };
-                        Ok(ValidateCallbackResult::Valid)
                     }
                 }
             }
@@ -195,7 +164,6 @@ pub fn validate(op: Op) -> ExternResult<ValidateCallbackResult> {
                     original_action,
                     original_product_group,
                 ),
-                EntryTypes::ProductPreference(_original_product_preference) => Ok(ValidateCallbackResult::Valid),
             }
         }
         FlatOp::RegisterCreateLink {
@@ -206,7 +174,6 @@ pub fn validate(op: Op) -> ExternResult<ValidateCallbackResult> {
             action: _,
         } => match link_type {
             LinkTypes::ProductTypeToGroup => Ok(ValidateCallbackResult::Valid),
-            LinkTypes::AgentToPreference => Ok(ValidateCallbackResult::Valid),
         },
         FlatOp::RegisterDeleteLink {
             link_type,
@@ -217,7 +184,6 @@ pub fn validate(op: Op) -> ExternResult<ValidateCallbackResult> {
             action: _,
         } => match link_type {
             LinkTypes::ProductTypeToGroup => Ok(ValidateCallbackResult::Valid),
-            LinkTypes::AgentToPreference => Ok(ValidateCallbackResult::Valid),
         },
         // The rest of the validation callbacks remain the same as in the original file
         FlatOp::StoreRecord(store_record) => match store_record {
@@ -228,9 +194,6 @@ pub fn validate(op: Op) -> ExternResult<ValidateCallbackResult> {
                 }
                 EntryTypes::ProductGroup(product_group) => {
                     validate_create_product_group(EntryCreationAction::Create(action), product_group)
-                }
-                EntryTypes::ProductPreference(_product_preference) => {
-                    Ok(ValidateCallbackResult::Valid)
                 }
             },
             OpRecord::UpdateEntry {
@@ -313,9 +276,6 @@ pub fn validate(op: Op) -> ExternResult<ValidateCallbackResult> {
                         } else {
                             Ok(result)
                         }
-                    }
-                    EntryTypes::ProductPreference(_product_preference) => {
-                        Ok(ValidateCallbackResult::Valid)
                     }
                 }
             }
