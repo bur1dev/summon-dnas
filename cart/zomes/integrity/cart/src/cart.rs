@@ -1,21 +1,6 @@
 use hdi::prelude::*;
-use crate::{DeliveryTimeSlot, Address};
 
-// For storing checked out carts
-#[hdk_entry_helper]
-#[derive(Clone)]
-pub struct CheckedOutCart {
-    pub id: String,
-    pub products: Vec<CartProduct>,
-    pub total: f64,
-    pub created_at: u64,
-    pub status: String, // "processing", "completed", "returned", "claimed", "awaiting_shopper"
-    pub delivery_time: Option<DeliveryTimeSlot>,
-    pub customer_pub_key: AgentPubKey,
-    pub delivery_address: Address,
-    pub delivery_instructions: Option<String>,
-}
-
+// Individual cart item - PUBLIC DHT entry (each "Add to Cart" creates one)
 #[hdk_entry_helper]
 #[derive(Clone)]
 pub struct CartProduct {
@@ -31,8 +16,11 @@ pub struct CartProduct {
     // The price is frozen at the time of adding to the cart. This is the source of truth.
     pub price_at_checkout: f64,
     pub promo_price: Option<f64>,
+    
+    // How the product is sold - "UNIT" or "WEIGHT" - needed for correct increment/decrement behavior
+    pub sold_by: Option<String>,
 
-    // --- CART-SPECIFIC DATA (Unchanged) ---
+    // --- CART-SPECIFIC DATA ---
     pub quantity: f64,
     pub timestamp: u64,
 
@@ -40,11 +28,27 @@ pub struct CartProduct {
     pub note: Option<String>,
 }
 
-// New structure for the private cart (stored as private entry)
+// Simple entry to track cart session state - PUBLIC DHT entry
 #[hdk_entry_helper]
 #[derive(Clone)]
-pub struct PrivateCart {
-    pub items: Vec<CartProduct>,
+pub struct SessionStatus {
+    pub status: String, // "Building" or "AwaitingShopper"
     pub last_updated: u64,
+}
+
+// Delivery instructions - PUBLIC DHT entry
+#[hdk_entry_helper]
+#[derive(Clone)]
+pub struct DeliveryInstructions {
+    pub instructions: String,
+    pub timestamp: u64,
+}
+
+// Delivery time slot - PUBLIC DHT entry
+#[hdk_entry_helper]
+#[derive(Clone)]
+pub struct DeliveryTimeSlot {
+    pub date: u64,         // Unix timestamp for the date
+    pub time_slot: String, // e.g., "2pm-4pm"
 }
 

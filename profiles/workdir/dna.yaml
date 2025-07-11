@@ -1,0 +1,30 @@
+manifest_version: '1'
+name: profiles
+integrity:
+  network_seed: null
+  properties: null
+  zomes:  
+  - name: profiles_integrity
+    hash: null
+    bundled: '../../../summon/target/wasm32-unknown-unknown/release/profiles_integrity.wasm'
+    dependencies: null
+    dylib: null
+  - name: address_integrity
+    hash: null
+    bundled: '../../../summon/target/wasm32-unknown-unknown/release/address_integrity.wasm'
+    dependencies: null
+    dylib: null
+coordinator:
+  zomes:
+  - name: profiles
+    hash: null
+    bundled: '../../../summon/target/wasm32-unknown-unknown/release/profiles.wasm'
+    dependencies:
+    - name: profiles_integrity
+    dylib: null
+  - name: address
+    hash: null
+    bundled: '../../../summon/target/wasm32-unknown-unknown/release/address.wasm'
+    dependencies:
+    - name: address_integrity
+    dylib: null

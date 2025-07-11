@@ -44,9 +44,6 @@ fn is_admin(_: ()) -> ExternResult<bool> {
 // Called the first time a zome call is made to the cell containing this zome
 #[hdk_extern]
 pub fn init() -> ExternResult<InitCallbackResult> {
-    // Log the current cell info during initialization
-    let current_cell_info = get_cell_id_debug_info()?;
-    warn!("[init] Initializing product_catalog zome in cell: {}", current_cell_info);
     Ok(InitCallbackResult::Pass)
 }
 

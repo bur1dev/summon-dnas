@@ -1,8 +1,5 @@
 use hdi::prelude::*;
 
-mod cart;
-pub use cart::*;
-
 mod address;
 pub use address::*;
 
@@ -11,18 +8,14 @@ pub use address::*;
 #[hdk_entry_types]
 #[unit_enum(UnitEntryTypes)]
 pub enum EntryTypes {
-    CartProduct(CartProduct),
-    SessionStatus(SessionStatus),
+    #[entry_type(name = "address", required_validations = 3)]
     Address(Address),
-    DeliveryTimeSlot(DeliveryTimeSlot),
-    DeliveryInstructions(DeliveryInstructions),
 }
 
 #[derive(Serialize, Deserialize)]
 #[hdk_link_types]
 pub enum LinkTypes {
-    // Single LinkType for all public cart data - everything uses same path
-    PublicPathToCartData,
+    AgentToAddress,
 }
 
 // Genesis validation
@@ -51,10 +44,10 @@ pub fn validate(op: Op) -> ExternResult<ValidateCallbackResult> {
         FlatOp::RegisterUpdate(_) => Ok(ValidateCallbackResult::Valid),
         FlatOp::RegisterDelete(_) => Ok(ValidateCallbackResult::Valid),
         FlatOp::RegisterCreateLink { link_type, .. } => match link_type {
-            LinkTypes::PublicPathToCartData => Ok(ValidateCallbackResult::Valid),
+            LinkTypes::AgentToAddress => Ok(ValidateCallbackResult::Valid),
         },
         FlatOp::RegisterDeleteLink { link_type, .. } => match link_type {
-            LinkTypes::PublicPathToCartData => Ok(ValidateCallbackResult::Valid),
+            LinkTypes::AgentToAddress => Ok(ValidateCallbackResult::Valid),
         },
         FlatOp::StoreRecord(_) => Ok(ValidateCallbackResult::Valid),
         FlatOp::RegisterAgentActivity(agent_activity) => match agent_activity {

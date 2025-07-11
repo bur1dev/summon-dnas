@@ -48,11 +48,6 @@ fn default_limit() -> usize {
 // Modified to work with product groups and return correct total_products
 #[hdk_extern]
 pub fn get_products_by_category(params: GetProductsParams) -> ExternResult<CategorizedProducts> {
-    // Log the current cell info
-    let current_cell_info = get_cell_id_debug_info()?;
-    warn!("[get_products_by_category] Called in cell: {}", current_cell_info);
-    warn!("[get_products_by_category] Params: category={}, subcategory={:?}, product_type={:?}", 
-           params.category, params.subcategory, params.product_type);
     
     // Determine the path based on category/subcategory/product_type
     let base_path = match (&params.subcategory, &params.product_type) {

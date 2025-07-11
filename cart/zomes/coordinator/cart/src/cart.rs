@@ -1,688 +1,410 @@
 use cart_integrity::*;
 use hdk::prelude::*;
+use serde::{Deserialize, Serialize};
 
-use crate::CheckoutCartInput;
-use crate::CheckedOutCartWithHash;
-use crate::AddToPrivateCartInput;
-use crate::ReplacePrivateCartInput;
-
-// Helper function removed - no longer needed with new CartProduct structure
-
-
-// Implementation of replace_private_cart - NEW function to replace entire cart with single operation
-pub(crate) fn replace_private_cart_impl(input: ReplacePrivateCartInput) -> ExternResult<()> {
-    warn!("START replace_private_cart_impl: Replacing cart with {} items, timestamp: {}", 
-          input.items.len(), input.last_updated);
-    
-    let agent_pub_key = agent_info()?.agent_initial_pubkey;
-    warn!("Agent pubkey: {:?}", agent_pub_key);
-    
-    // Convert input items directly to CartProduct - no hash decoding needed
-    let cart_items: Vec<CartProduct> = input.items.into_iter().map(|item| CartProduct {
-        product_id: item.product_id,
-        upc: item.upc,
-        product_name: item.product_name,
-        product_image_url: item.product_image_url,
-        price_at_checkout: item.price_at_checkout,
-        promo_price: item.promo_price,
-        quantity: item.quantity,
-        timestamp: item.timestamp,
-        note: item.note,
-    }).collect();
-    
-    warn!("Converted {} cart items", cart_items.len());
-    
-    // Create PrivateCart from the converted items
-    let cart = PrivateCart {
-        items: cart_items,
-        last_updated: input.last_updated,
-    };
-    
-    // Create the entry
-    match create_entry(EntryTypes::PrivateCart(cart)) {
-        Ok(hash) => {
-            warn!("SUCCESS: Created new PrivateCart entry with hash: {:?}", hash);
-            
-            // Get links to existing cart
-            let links = match get_links(
-                GetLinksInputBuilder::try_new(agent_pub_key.clone(), LinkTypes::AgentToPrivateCart)?.build(),
-            ) {
-                Ok(links) => {
-                    warn!("Found {} existing cart links", links.len());
-                    links
-                },
-                Err(e) => {
-                    warn!("ERROR getting links: {:?}", e);
-                    return Err(e);
-                }
-            };
-            
-            // Delete existing links
-            let mut delete_success = 0;
-            let mut delete_errors = 0;
-            for link in links {
-                warn!("Deleting link: {:?}", link.create_link_hash);
-                match delete_link(link.create_link_hash.clone()) {
-                    Ok(_) => delete_success += 1,
-                    Err(e) => {
-                        warn!("ERROR deleting link {:?}: {:?}", link.create_link_hash, e);
-                        delete_errors += 1;
-                    }
-                }
-            }
-            warn!("Deleted {} links successfully, {} failed", delete_success, delete_errors);
-            
-            // Create new link to the updated cart
-            match create_link(
-                agent_pub_key,
-                hash.clone(),
-                LinkTypes::AgentToPrivateCart,
-                LinkTag::new(""),
-            ) {
-                Ok(link_hash) => {
-                    warn!("SUCCESS: Created new link with hash: {:?}", link_hash);
-                },
-                Err(e) => {
-                    warn!("ERROR creating link: {:?}", e);
-                    return Err(e);
-                }
-            }
-            
-            warn!("END replace_private_cart_impl: Successfully replaced cart");
-            Ok(())
-        },
-        Err(e) => {
-            warn!("ERROR creating cart entry: {:?}", e);
-            Err(e)
-        }
-    }
+// Helper struct that includes both the cart product and its hash for removal
+#[derive(Serialize, Deserialize, Debug)]
+pub struct CartProductWithHash {
+    #[serde(flatten)]
+    pub product: CartProduct,
+    pub action_hash: ActionHash,
 }
 
-// Implementation of get_private_cart - retrieves the agent's private cart
-pub(crate) fn get_private_cart_impl() -> ExternResult<PrivateCart> {
-    let agent_pub_key = agent_info()?.agent_initial_pubkey;
+// Complete cart session data structure
+#[derive(Serialize, Deserialize, Debug)]
+pub struct CartSessionData {
+    pub cart_products: Vec<CartProductWithHash>,
+    pub session_status: Option<Record>,
+    pub address: Option<Record>,
+    pub delivery_time_slot: Option<Record>,
+    pub delivery_instructions: Option<Record>,
+}
 
-    // Get links to private cart from the agent
-    let links = get_links(
-        GetLinksInputBuilder::try_new(agent_pub_key, LinkTypes::AgentToPrivateCart)?.build(),
+// Helper function to get PUBLIC path that all agents can see
+fn get_public_cart_path() -> ExternResult<Path> {
+    let path_str = "active_carts";
+    Path::try_from(path_str).map_err(|_| wasm_error!(WasmErrorInner::Guest("Failed to create public path".to_string())))
+}
+
+// Add individual cart item - create_entry + create_link to PUBLIC path
+pub(crate) fn add_item_impl(item: CartProduct) -> ExternResult<ActionHash> {
+    let public_path = get_public_cart_path()?;
+    let public_hash = public_path.path_entry_hash()?;
+    
+    // Create the CartProduct entry
+    let cart_product_hash = create_entry(EntryTypes::CartProduct(item))?;
+    
+    // Link it DIRECTLY to the PUBLIC path so all agents can see it
+    create_link(
+        public_hash,
+        cart_product_hash.clone(),
+        LinkTypes::PublicPathToCartData,
+        ()
     )?;
+    
+    Ok(cart_product_hash)
+}
 
-    // If a cart exists, retrieve it
-    if let Some(link) = links.first() {
-        if let Some(cart_hash) = link.target.clone().into_action_hash() {
-            match get(cart_hash.clone(), GetOptions::default())? {
-                Some(record) => {
-                    let cart: PrivateCart = record
-                        .entry()
-                        .to_app_option()
-                        .map_err(|e| {
-                            wasm_error!(WasmErrorInner::Guest(format!(
-                                "Failed to deserialize: {}",
-                                e
-                            )))
-                        })?
-                        .ok_or(wasm_error!(WasmErrorInner::Guest(
-                            "Expected app entry".to_string()
-                        )))?;
+// Remove individual cart item - delete_link only
+pub(crate) fn remove_item_impl(item_hash: ActionHash) -> ExternResult<ActionHash> {
+    let public_path = get_public_cart_path()?;
+    let public_hash = public_path.path_entry_hash()?;
+    
+    // Get links from PUBLIC path to find the link to delete
+    let links = get_links(
+        GetLinksInputBuilder::try_new(public_hash, LinkTypes::PublicPathToCartData)?.build()
+    )?;
+    
+    // Find and delete the link pointing to this cart product
+    for link in links {
+        if let Some(target_hash) = link.target.into_action_hash() {
+            if target_hash == item_hash {
+                return delete_link(link.create_link_hash);
+            }
+        }
+    }
+    
+    Err(wasm_error!(WasmErrorInner::Guest("Cart item not found".to_string())))
+}
 
-                    return Ok(cart);
-                }
-                None => {
-                    // Cart not found, create a new one
-                    return Ok(PrivateCart {
-                        items: Vec::new(),
-                        last_updated: sys_time()?.as_micros() as u64,
+// Get all current cart items using PUBLIC path - now ALL agents can see ALL cart items
+pub(crate) fn get_current_items_impl() -> ExternResult<Vec<CartProductWithHash>> {
+    let public_path = get_public_cart_path()?;
+    let public_hash = public_path.path_entry_hash()?;
+    
+    let links = get_links(
+        GetLinksInputBuilder::try_new(public_hash, LinkTypes::PublicPathToCartData)?.build()
+    )?;
+    
+    let mut cart_items = Vec::new();
+    for link in links {
+        if let Some(target_hash) = link.target.into_action_hash() {
+            if let Some(record) = get(target_hash.clone(), GetOptions::default())? {
+                if let Ok(cart_product) = CartProduct::try_from(record) {
+                    cart_items.push(CartProductWithHash {
+                        product: cart_product,
+                        action_hash: target_hash,
                     });
                 }
             }
         }
     }
-
-    // No cart found, return empty cart
-    Ok(PrivateCart {
-        items: Vec::new(),
-        last_updated: sys_time()?.as_micros() as u64,
-    })
+    
+    Ok(cart_items)
 }
 
-// Implementation of add_to_private_cart - adds or updates an item in the private cart
-pub(crate) fn add_to_private_cart_impl(input: AddToPrivateCartInput) -> ExternResult<()> {
-    let agent_pub_key = agent_info()?.agent_initial_pubkey;
-
-    // Get the current private cart
-    let mut cart = get_private_cart_impl()?;
-    let current_time = sys_time()?.as_micros() as u64;
-
-    // Find if the item already exists in the cart using product_id
-    let item_index = cart.items.iter().position(|item|
-        item.product_id == input.product_id
-    );
-
-    if input.quantity == 0.0 {
-        // Remove item if quantity is 0
-        if let Some(index) = item_index {
-            cart.items.remove(index);
-        }
-    } else {
-        // Update item if it exists or add a new one with full product snapshot
-        if let Some(index) = item_index {
-            cart.items[index].quantity = input.quantity;
-            cart.items[index].timestamp = current_time;
-            cart.items[index].note = input.note;
-        } else {
-            cart.items.push(CartProduct {
-                product_id: input.product_id,
-                upc: input.upc,
-                product_name: input.product_name,
-                product_image_url: input.product_image_url,
-                price_at_checkout: input.price_at_checkout,
-                promo_price: input.promo_price,
-                quantity: input.quantity,
-                timestamp: current_time,
-                note: input.note,
-            });
-        }
-    }
-
-    // Update the last_updated timestamp
-    cart.last_updated = current_time;
-
-    // Save the updated cart
-    let cart_hash = create_entry(EntryTypes::PrivateCart(cart))?;
-
-    // Get links to existing private cart
+// Get session status using PUBLIC path - ALL session statuses are public
+pub(crate) fn get_session_status_impl() -> ExternResult<Option<Record>> {
+    warn!("🔎 GET SESSION STATUS: Looking for SessionStatus entries");
+    
+    let public_path = get_public_cart_path()?;
+    let public_hash = public_path.path_entry_hash()?;
+    
     let links = get_links(
-        GetLinksInputBuilder::try_new(agent_pub_key.clone(), LinkTypes::AgentToPrivateCart)?.build(),
+        GetLinksInputBuilder::try_new(public_hash, LinkTypes::PublicPathToCartData)?.build()
     )?;
-
-    // Delete existing links
+    
+    // Find the SessionStatus record specifically
     for link in links {
-        delete_link(link.create_link_hash)?;
+        if let Some(target_hash) = link.target.into_action_hash() {
+            if let Some(record) = get(target_hash, GetOptions::default())? {
+                // Only return if this is actually a SessionStatus record
+                if SessionStatus::try_from(record.clone()).is_ok() {
+                    warn!("✅ GET SESSION STATUS: Found SessionStatus record");
+                    return Ok(Some(record));
+                }
+            }
+        }
     }
-
-    // Create new link to the updated cart
-    create_link(
-        agent_pub_key,
-        cart_hash,
-        LinkTypes::AgentToPrivateCart,
-        LinkTag::new(""),
-    )?;
-
-    Ok(())
+    
+    warn!("❌ GET SESSION STATUS: No SessionStatus found");
+    Ok(None)
 }
 
-// Implementation of checkout_cart - creates public order entry with private address link
-pub(crate) fn checkout_cart_impl(input: CheckoutCartInput) -> ExternResult<ActionHash> {
-    let agent_pub_key = agent_info()?.agent_initial_pubkey;
+// Update session status to "Checkout" using PUBLIC path - ALL status changes are public
+pub(crate) fn publish_order_impl() -> ExternResult<ActionHash> {
+    warn!("🚀 PUBLISH ORDER: Starting publish_order_impl");
+    
     let current_time = sys_time()?.as_micros() as u64;
-
-    // Get cart products from input instead of DHT
-    let cart_products = input.cart_products.ok_or_else(|| {
-        wasm_error!(WasmErrorInner::Guest("Cart products required".to_string()))
-    })?;
-
-    if cart_products.is_empty() {
-        return Err(wasm_error!(WasmErrorInner::Guest(
-            "Cart is empty".to_string()
-        )));
-    }
-
-    // Create a checked out cart entry (public order) with address included
-    let checked_out_cart = CheckedOutCart {
-        id: current_time.to_string(),
-        products: cart_products,
-        total: 0.0, // Frontend calculates total
-        created_at: current_time,
-        status: "processing".to_string(), // Standard processing status
-        delivery_time: input.delivery_time,
-        customer_pub_key: agent_pub_key.clone(), // Keep for future shopper workflow
-        delivery_address: input.delivery_address,
-        delivery_instructions: input.delivery_instructions,
-    };
-
-    // Create the public order entry
-    let cart_hash = create_entry(EntryTypes::CheckedOutCart(checked_out_cart))?;
-
-    // Link customer to this order
-    create_link(
-        agent_pub_key.clone(),
-        cart_hash.clone(),
-        LinkTypes::AgentToCheckedOutCart,
-        LinkTag::new("customer"),
-    )?;
-
-    // NEW: Create global anchor link for shopper discovery
-    let all_orders_path = Path::try_from("all_orders")?;
-    let path_hash = all_orders_path.path_entry_hash()?;
-    create_link(
-        path_hash,
-        cart_hash.clone(),
-        LinkTypes::AllOrdersToCheckedOutCart,
-        LinkTag::new("available"),
-    )?;
-
-
-    // Clear the private cart after successful checkout
-    let empty_cart = PrivateCart {
-        items: Vec::new(),
+    let public_path = get_public_cart_path()?;
+    let public_hash = public_path.path_entry_hash()?;
+    
+    let new_status = SessionStatus {
+        status: "Checkout".to_string(),
         last_updated: current_time,
     };
-
-    let empty_cart_hash = create_entry(EntryTypes::PrivateCart(empty_cart))?;
-
-    // Delete existing links to private cart
-    let links = get_links(
-        GetLinksInputBuilder::try_new(agent_pub_key.clone(), LinkTypes::AgentToPrivateCart)?.build(),
-    )?;
-
-    for link in links {
-        delete_link(link.create_link_hash)?;
+    
+    warn!("📝 PUBLISH ORDER: Creating SessionStatus with status: Checkout, timestamp: {}", current_time);
+    
+    if let Some(status_record) = get_session_status_impl()? {
+        let new_hash = update_entry(status_record.action_address().clone(), new_status)?;
+        
+        // Find and delete only the link pointing to the old SessionStatus
+        let links = get_links(
+            GetLinksInputBuilder::try_new(public_hash.clone(), LinkTypes::PublicPathToCartData)?.build()
+        )?;
+        for link in links {
+            if let Some(target_hash) = link.target.clone().into_action_hash() {
+                if target_hash == *status_record.action_address() {
+                    delete_link(link.create_link_hash)?;
+                    break;
+                }
+            }
+        }
+        create_link(public_hash, new_hash.clone(), LinkTypes::PublicPathToCartData, ())?;
+        
+        warn!("✅ PUBLISH ORDER: SessionStatus updated with hash: {:?}", new_hash);
+        Ok(new_hash)
+    } else {
+        let status_hash = create_entry(EntryTypes::SessionStatus(new_status))?;
+        
+        create_link(
+            public_hash,
+            status_hash.clone(),
+            LinkTypes::PublicPathToCartData,
+            ()
+        )?;
+        
+        warn!("✅ PUBLISH ORDER: SessionStatus created with hash: {:?}", status_hash);
+        Ok(status_hash)
     }
+}
 
-    // Create new link to the empty cart
+// Update session status back to "Shopping" using PUBLIC path - ALL status changes are public
+pub(crate) fn recall_order_impl() -> ExternResult<ActionHash> {
+    let current_time = sys_time()?.as_micros() as u64;
+    let public_path = get_public_cart_path()?;
+    let public_hash = public_path.path_entry_hash()?;
+    
+    let new_status = SessionStatus {
+        status: "Shopping".to_string(),
+        last_updated: current_time,
+    };
+    
+    if let Some(status_record) = get_session_status_impl()? {
+        let new_hash = update_entry(status_record.action_address().clone(), new_status)?;
+        
+        // Find and delete only the link pointing to the old SessionStatus
+        let links = get_links(
+            GetLinksInputBuilder::try_new(public_hash.clone(), LinkTypes::PublicPathToCartData)?.build()
+        )?;
+        for link in links {
+            if let Some(target_hash) = link.target.clone().into_action_hash() {
+                if target_hash == *status_record.action_address() {
+                    delete_link(link.create_link_hash)?;
+                    break;
+                }
+            }
+        }
+        create_link(public_hash, new_hash.clone(), LinkTypes::PublicPathToCartData, ())?;
+        
+        warn!("✅ PUBLISH ORDER: SessionStatus updated with hash: {:?}", new_hash);
+        Ok(new_hash)
+    } else {
+        let status_hash = create_entry(EntryTypes::SessionStatus(new_status))?;
+        
+        create_link(
+            public_hash,
+            status_hash.clone(),
+            LinkTypes::PublicPathToCartData,
+            ()
+        )?;
+        
+        Ok(status_hash)
+    }
+}
+
+// Set delivery address for first time - create_entry + create_link to PUBLIC path
+pub(crate) fn set_delivery_address_impl(address: Address) -> ExternResult<ActionHash> {
+    let public_path = get_public_cart_path()?;
+    let public_hash = public_path.path_entry_hash()?;
+    
+    warn!("🛒 CART DNA: Creating PUBLIC address entry for cart session: {} {}, {}", 
+           address.street, address.city, address.state);
+    
+    // Create the Address entry
+    let address_hash = create_entry(EntryTypes::Address(address))?;
+    
+    warn!("✅ CART DNA: Public address created with hash: {:?}", address_hash);
+    
+    // Link it to the PUBLIC path so all agents can see it
     create_link(
-        agent_pub_key,
-        empty_cart_hash,
-        LinkTypes::AgentToPrivateCart,
-        LinkTag::new(""),
+        public_hash,
+        address_hash.clone(),
+        LinkTypes::PublicPathToCartData,
+        ()
     )?;
-
-    Ok(cart_hash)
+    
+    Ok(address_hash)
 }
 
-// Implementation of get_checked_out_carts - returns only caller's orders
-pub(crate) fn get_checked_out_carts_impl() -> ExternResult<Vec<CheckedOutCartWithHash>> {
-    let agent_pub_key = agent_info()?.agent_initial_pubkey;
-    warn!("get_checked_out_carts_impl: Fetching carts for agent: {:?}", agent_pub_key);
-
-    // Get all links from this agent to checked out carts
+// Update delivery address - delete old link, create new entry, create new link
+pub(crate) fn update_delivery_address_impl(previous_address_hash: ActionHash, new_address: Address) -> ExternResult<ActionHash> {
+    let public_path = get_public_cart_path()?;
+    let public_hash = public_path.path_entry_hash()?;
+    
+    warn!("🔄 CART DNA: Updating PUBLIC address from {:?} to: {} {}, {}", 
+           previous_address_hash, new_address.street, new_address.city, new_address.state);
+    
+    // Find and delete the link pointing to the previous address
     let links = get_links(
-        GetLinksInputBuilder::try_new(agent_pub_key, LinkTypes::AgentToCheckedOutCart)?.build(),
+        GetLinksInputBuilder::try_new(public_hash.clone(), LinkTypes::PublicPathToCartData)?.build()
     )?;
-    warn!("get_checked_out_carts_impl: Found {} links to carts.", links.len());
-
-    let mut checked_out_carts = Vec::new();
-
+    
     for link in links {
-        if let Some(cart_hash) = link.target.clone().into_action_hash() {
-            warn!("get_checked_out_carts_impl: Processing cart link with target hash: {:?}", cart_hash);
-            match get_checked_out_cart_impl(cart_hash.clone())? {
-                Some(cart) => {
-                    warn!("get_checked_out_carts_impl: Retrieved cart with hash {:?}, status: '{}'", cart_hash, cart.status);
-                    // Filter out returned carts
-                    if cart.status != "returned" {
-                        warn!("get_checked_out_carts_impl: Cart status is NOT 'returned', adding to results.");
-                        checked_out_carts.push(CheckedOutCartWithHash {
-                            cart_hash,
-                            cart,
-                        });
-                    } else {
-                         warn!("get_checked_out_carts_impl: Cart status IS 'returned', filtering out.");
-                    }
-                }
-                None => {
-                    warn!("get_checked_out_carts_impl: Could not retrieve cart details for hash: {:?}", cart_hash);
-                },
+        if let Some(target_hash) = link.target.clone().into_action_hash() {
+            if target_hash == previous_address_hash {
+                delete_link(link.create_link_hash)?;
+                break;
             }
-        } else {
-            warn!("get_checked_out_carts_impl: Link target is not an ActionHash: {:?}", link.target);
         }
     }
-
-    // Sort by creation time (newest first)
-    checked_out_carts.sort_by(|a, b| b.cart.created_at.cmp(&a.cart.created_at));
-    warn!("get_checked_out_carts_impl: Returning {} filtered carts.", checked_out_carts.len());
-
-    Ok(checked_out_carts)
+    
+    // Create new address entry
+    let new_address_hash = create_entry(EntryTypes::Address(new_address))?;
+    
+    warn!("✅ CART DNA: Updated public address created with hash: {:?}", new_address_hash);
+    
+    // Link new address to PUBLIC path
+    create_link(
+        public_hash,
+        new_address_hash.clone(),
+        LinkTypes::PublicPathToCartData,
+        ()
+    )?;
+    
+    Ok(new_address_hash)
 }
 
-// NEW: Implementation for shoppers to get ALL checked out carts from ALL agents
-pub(crate) fn get_all_checked_out_carts_impl() -> ExternResult<Vec<CheckedOutCartWithHash>> {
-    warn!("get_all_checked_out_carts_impl: Using path-based approach like products DNA");
-
-    // Use the SAME pattern as get_all_available_orders_impl
-    let all_orders_path = Path::try_from("all_orders")?;
-    let path_hash = all_orders_path.path_entry_hash()?;
+// Set delivery time slot - create_entry + create_link to PUBLIC path
+pub(crate) fn set_delivery_time_slot_impl(time_slot: DeliveryTimeSlot) -> ExternResult<ActionHash> {
+    let public_path = get_public_cart_path()?;
+    let public_hash = public_path.path_entry_hash()?;
     
-    warn!("get_all_checked_out_carts_impl: Querying path 'all_orders' for all cart links");
-
-    // Query all links from the global path to checked out carts (FIXED LinkType)
+    warn!("🛒 CART DNA: Creating PUBLIC delivery time slot entry: {} at {}", 
+           time_slot.time_slot, time_slot.date);
+    
+    // Check if time slot already exists and delete old link
     let links = get_links(
-        GetLinksInputBuilder::try_new(path_hash, LinkTypes::AllOrdersToCheckedOutCart)?.build(),
+        GetLinksInputBuilder::try_new(public_hash.clone(), LinkTypes::PublicPathToCartData)?.build()
     )?;
-    warn!("get_all_checked_out_carts_impl: Found {} links from global path to checked out carts", links.len());
-
-    let mut checked_out_carts = Vec::new();
-
     for link in links {
-        if let Some(cart_hash) = link.target.clone().into_action_hash() {
-            warn!("get_all_checked_out_carts_impl: Processing cart link with target hash: {:?}", cart_hash);
-            match get_checked_out_cart_impl(cart_hash.clone())? {
-                Some(cart) => {
-                    warn!("get_all_checked_out_carts_impl: Retrieved cart with hash {:?}, status: '{}'", cart_hash, cart.status);
-                    // Filter out returned carts, same as original function
-                    if cart.status != "returned" {
-                        warn!("get_all_checked_out_carts_impl: Cart status is NOT 'returned', adding to results.");
-                        checked_out_carts.push(CheckedOutCartWithHash {
-                            cart_hash,
-                            cart,
-                        });
-                    } else {
-                        warn!("get_all_checked_out_carts_impl: Cart status IS 'returned', filtering out.");
-                    }
-                }
-                None => {
-                    warn!("get_all_checked_out_carts_impl: Could not retrieve cart with hash: {:?}", cart_hash);
+        if let Some(target_hash) = link.target.clone().into_action_hash() {
+            if let Some(record) = get(target_hash, GetOptions::default())? {
+                if DeliveryTimeSlot::try_from(record).is_ok() {
+                    delete_link(link.create_link_hash)?;
+                    break;
                 }
             }
-        } else {
-            warn!("get_all_checked_out_carts_impl: Link target is not an ActionHash: {:?}", link.target);
         }
     }
-
-    // Sort by creation time (newest first), same as original function
-    checked_out_carts.sort_by(|a, b| b.cart.created_at.cmp(&a.cart.created_at));
-    warn!("get_all_checked_out_carts_impl: Returning {} filtered carts from global path", checked_out_carts.len());
-
-    Ok(checked_out_carts)
+    
+    // Create the DeliveryTimeSlot entry
+    let time_slot_hash = create_entry(EntryTypes::DeliveryTimeSlot(time_slot))?;
+    
+    warn!("✅ CART DNA: Public delivery time slot created with hash: {:?}", time_slot_hash);
+    
+    // Link it to the PUBLIC path so all agents can see it
+    create_link(
+        public_hash,
+        time_slot_hash.clone(),
+        LinkTypes::PublicPathToCartData,
+        ()
+    )?;
+    
+    Ok(time_slot_hash)
 }
 
-// NEW: Implementation for shoppers to get ALL available orders from ALL customers
-pub(crate) fn get_all_available_orders_impl() -> ExternResult<Vec<CheckedOutCartWithHash>> {
-    warn!("get_all_available_orders_impl: Starting to get all available orders for shoppers");
-
-    // Query from global "all_orders" anchor
-    let all_orders_path = Path::try_from("all_orders")?;
-    let path_hash = all_orders_path.path_entry_hash()?;
+// Set delivery instructions - create_entry + create_link to PUBLIC path
+pub(crate) fn set_delivery_instructions_impl(instructions: DeliveryInstructions) -> ExternResult<ActionHash> {
+    let public_path = get_public_cart_path()?;
+    let public_hash = public_path.path_entry_hash()?;
     
-    warn!("get_all_available_orders_impl: Querying path 'all_orders' for available orders");
-
-    // Query all links from the global anchor to available orders
+    warn!("🛒 CART DNA: Creating PUBLIC delivery instructions entry: {}", 
+           instructions.instructions);
+    
+    // Check if instructions already exist and delete old link
     let links = get_links(
-        GetLinksInputBuilder::try_new(path_hash, LinkTypes::AllOrdersToCheckedOutCart)?.build(),
+        GetLinksInputBuilder::try_new(public_hash.clone(), LinkTypes::PublicPathToCartData)?.build()
     )?;
-    warn!("get_all_available_orders_impl: Found {} links from all_orders anchor", links.len());
-
-    let mut available_orders = Vec::new();
-
     for link in links {
-        if let Some(cart_hash) = link.target.clone().into_action_hash() {
-            warn!("get_all_available_orders_impl: Processing order link with target hash: {:?}", cart_hash);
-            match get_checked_out_cart_impl(cart_hash.clone())? {
-                Some(cart) => {
-                    warn!("get_all_available_orders_impl: Retrieved order with hash {:?}, status: '{}'", cart_hash, cart.status);
-                    available_orders.push(CheckedOutCartWithHash {
-                        cart_hash,
-                        cart,
+        if let Some(target_hash) = link.target.clone().into_action_hash() {
+            if let Some(record) = get(target_hash, GetOptions::default())? {
+                if DeliveryInstructions::try_from(record).is_ok() {
+                    delete_link(link.create_link_hash)?;
+                    break;
+                }
+            }
+        }
+    }
+    
+    // Create the DeliveryInstructions entry
+    let instructions_hash = create_entry(EntryTypes::DeliveryInstructions(instructions))?;
+    
+    warn!("✅ CART DNA: Public delivery instructions created with hash: {:?}", instructions_hash);
+    
+    // Link it to the PUBLIC path so all agents can see it
+    create_link(
+        public_hash,
+        instructions_hash.clone(),
+        LinkTypes::PublicPathToCartData,
+        ()
+    )?;
+    
+    Ok(instructions_hash)
+}
+
+// Consolidated function to get all session data in one call using PUBLIC path - ALL DATA IS PUBLIC
+pub(crate) fn get_session_data_impl() -> ExternResult<CartSessionData> {
+    warn!("🔍 GET SESSION DATA: Starting get_session_data_impl");
+    
+    let public_path = get_public_cart_path()?;
+    let public_hash = public_path.path_entry_hash()?;
+    
+    // Get all links from PUBLIC path - ALL ENTRIES ARE PUBLIC
+    let all_links = get_links(
+        GetLinksInputBuilder::try_new(public_hash, LinkTypes::PublicPathToCartData)?.build()
+    )?;
+    
+    // Process all links and categorize by entry type
+    let mut cart_products = Vec::new();
+    let mut session_status = None;
+    let mut address = None;
+    let mut delivery_time_slot = None;
+    let mut delivery_instructions = None;
+    
+    for link in all_links {
+        if let Some(target_hash) = link.target.into_action_hash() {
+            if let Some(record) = get(target_hash.clone(), GetOptions::default())? {
+                // Try to parse based on entry content using .is_ok() to avoid crashes
+                if let Ok(cart_product) = CartProduct::try_from(record.clone()) {
+                    cart_products.push(CartProductWithHash {
+                        product: cart_product,
+                        action_hash: target_hash,
                     });
+                } else if SessionStatus::try_from(record.clone()).is_ok() {
+                    session_status = Some(record);
+                } else if Address::try_from(record.clone()).is_ok() {
+                    address = Some(record);
+                } else if DeliveryTimeSlot::try_from(record.clone()).is_ok() {
+                    delivery_time_slot = Some(record);
+                } else if DeliveryInstructions::try_from(record.clone()).is_ok() {
+                    delivery_instructions = Some(record);
                 }
-                None => {
-                    warn!("get_all_available_orders_impl: Could not retrieve order details for hash: {:?}", cart_hash);
-                }
-            }
-        } else {
-            warn!("get_all_available_orders_impl: Link target is not an ActionHash: {:?}", link.target);
-        }
-    }
-
-    // Sort by creation time (newest first)
-    available_orders.sort_by(|a, b| b.cart.created_at.cmp(&a.cart.created_at));
-    warn!("get_all_available_orders_impl: Returning {} available orders", available_orders.len());
-
-    Ok(available_orders)
-}
-
-// Implementation of get_checked_out_cart - used by get_checked_out_carts_impl
-pub(crate) fn get_checked_out_cart_impl(
-    action_hash: ActionHash,
-) -> ExternResult<Option<CheckedOutCart>> {
-    match get(action_hash.clone(), GetOptions::default())? {
-        Some(record) => {
-            let entry = record
-                .entry()
-                .as_option()
-                .ok_or(wasm_error!(WasmErrorInner::Guest(
-                    "Expected entry".to_string()
-                )))?;
-
-            match entry {
-                Entry::App(_) => {
-                    let checked_out_cart: CheckedOutCart = record
-                        .entry()
-                        .to_app_option()
-                        .map_err(|e| {
-                            wasm_error!(WasmErrorInner::Guest(format!(
-                                "Failed to deserialize: {}",
-                                e
-                            )))
-                        })?
-                        .ok_or(wasm_error!(WasmErrorInner::Guest(
-                            "Expected app entry".to_string()
-                        )))?;
-
-                    Ok(Some(checked_out_cart))
-                }
-                _ => Err(wasm_error!(WasmErrorInner::Guest(
-                    "Expected app entry".to_string()
-                ))),
-            }
-        }
-        None => Ok(None),
-    }
-}
-
-// Implementation of return_to_shopping
-pub(crate) fn return_to_shopping_impl(cart_hash: ActionHash) -> ExternResult<()> {
-    // Get agent pubkey
-    let agent_pub_key = agent_info()?.agent_initial_pubkey;
-    
-    warn!("ENTRY POINT: return_to_shopping_impl with hash: {:?}", cart_hash);
-    
-    // Get the cart with error handling
-    let cart = match get_checked_out_cart_impl(cart_hash.clone()) {
-        Ok(Some(cart)) => {
-            warn!("SUCCESS: Found cart with status: {}", cart.status);
-            cart
-        },
-        Ok(None) => {
-            warn!("ERROR: Cart not found");
-            return Err(wasm_error!(WasmErrorInner::Guest("Cart not found".to_string())));
-        },
-        Err(e) => {
-            warn!("ERROR getting cart: {:?}", e);
-            return Err(e);
-        }
-    };
-    
-    // Update cart status
-    let mut updated_cart = cart.clone();
-    updated_cart.status = "returned".to_string();
-    warn!("UPDATING: Setting status to 'returned'");
-    
-    // Update entry and get new hash
-    let update_hash = match update_entry(cart_hash.clone(), updated_cart) {
-        Ok(hash) => {
-            warn!("SUCCESS: Updated entry, new hash: {:?}", hash);
-            hash
-        },
-        Err(e) => {
-            warn!("ERROR updating entry: {:?}", e);
-            return Err(e);
-        }
-    };
-    
-    // Delete global discovery link (AllOrdersToCheckedOutCart)
-    warn!("Deleting global discovery link for returned order");
-    let all_orders_path = Path::try_from("all_orders")?;
-    let path_hash = all_orders_path.path_entry_hash()?;
-    
-    let global_links = get_links(
-        GetLinksInputBuilder::try_new(path_hash, LinkTypes::AllOrdersToCheckedOutCart)?.build(),
-    )?;
-    
-    let mut found_global_link = false;
-    for link in global_links {
-        if let Some(target) = link.target.clone().into_action_hash() {
-            if target == cart_hash {
-                warn!("Deleting global discovery link: {:?}", link.create_link_hash);
-                found_global_link = true;
-                delete_link(link.create_link_hash)?;
-                break; // Only one global link per order
             }
         }
     }
     
-    if !found_global_link {
-        warn!("WARNING: No global discovery link found for cart hash: {:?}", cart_hash);
-    }
+    warn!("📊 GET SESSION DATA: Found {} cart_products, session_status: {:?}", 
+          cart_products.len(), 
+          session_status.as_ref().and_then(|r| SessionStatus::try_from(r.clone()).ok()));
     
-    // Find and delete link to old cart hash
-    warn!("Getting links from agent to checked out cart");
-    let links = get_links(
-        GetLinksInputBuilder::try_new(agent_pub_key.clone(), LinkTypes::AgentToCheckedOutCart)?.build(),
-    )?;
-    
-    let mut found_link = false;
-    for link in links {
-        if let Some(target) = link.target.clone().into_action_hash() {
-            if target == cart_hash {
-                warn!("Deleting old link: {:?}", link.create_link_hash);
-                found_link = true;
-                delete_link(link.create_link_hash)?;
-            }
-        }
-    }
-    
-    if !found_link {
-        warn!("WARNING: No link found to original cart hash");
-    }
-    
-    // Create new link to updated cart
-    warn!("Creating new link to updated cart hash: {:?}", update_hash);
-    create_link(
-        agent_pub_key,
-        update_hash,
-        LinkTypes::AgentToCheckedOutCart,
-        LinkTag::new("customer"),
-    )?;
-    
-    warn!("Return to shopping completed successfully");
-    Ok(())
+    Ok(CartSessionData {
+        cart_products,
+        session_status,
+        address,
+        delivery_time_slot,
+        delivery_instructions,
+    })
 }
-
-// ============================================================================
-// FAKE DATA GENERATION FOR TESTING - REMOVE FOR PRODUCTION
-// ============================================================================
-// This function creates a single fake order with real butter UPC (767707001678)
-// for testing the barcode scanner functionality. Remove this entire section
-// when ready to use real data only.
-
-pub(crate) fn generate_fake_order_with_butter_impl() -> ExternResult<ActionHash> { 
-    warn!("🚨🚨🚨 FAKE DATA VERSION 2.0 - DNA UPDATED WITH SYMLINK 🚨🚨🚨");
-    warn!("FAKE DATA: Creating fake order with real butter UPC for testing");
-    
-    // Create realistic fake delivery address
-    let fake_address = Address {
-        street: "123 Main Street".to_string(),
-        unit: None,
-        city: "Los Angeles".to_string(),
-        state: "CA".to_string(),
-        zip: "90210".to_string(),
-        lat: 34.0522, // Los Angeles latitude
-        lng: -118.2437, // Los Angeles longitude
-        is_default: true,
-        label: Some("FAKE TEST ADDRESS".to_string()),
-    };
-    
-    // Create fake delivery time slot
-    let fake_delivery_time = DeliveryTimeSlot {
-        date: 1735171200, // Unix timestamp for 2024-12-25 (Christmas day for easy identification)
-        time_slot: "2pm-4pm".to_string(), // Combined time slot format
-    };
-    
-    // Create multiple CartProducts for a more realistic order
-    let fake_cart_products = vec![
-        // Product 1: Butter (original - EXACTLY AS IT WAS)
-        CartProduct {
-            product_id: "FAKE_BUTTER_001".to_string(),
-            upc: Some("767707001678".to_string()), // REAL UPC from your butter package
-            product_name: "Kerrygold Irish Butter - 8oz".to_string(),
-            product_image_url: Some("https://prodcdn2.kerrygoldusa.com/wp-content/uploads/2017/09/Kerrygold-Naturally-Softer-Pure-Irish-Butter-Front.png".to_string()),
-            price_at_checkout: 4.99,
-            promo_price: None,
-            quantity: 1.0,
-            timestamp: sys_time()?.as_micros() as u64,
-            note: Some("FAKE ORDER FOR TESTING - UPC: 767707001678".to_string()),
-        },
-        // Product 2: Milk
-        CartProduct {
-            product_id: "FAKE_MILK_002".to_string(),
-            upc: Some("041220071258".to_string()), // Random UPC
-            product_name: "Organic Whole Milk - 1 Gallon".to_string(),
-            product_image_url: None,
-            price_at_checkout: 5.49,
-            promo_price: Some(4.99),
-            quantity: 2.0,
-            timestamp: sys_time()?.as_micros() as u64,
-            note: Some("Check expiration date please".to_string()),
-        },
-        // Product 3: Bread
-        CartProduct {
-            product_id: "FAKE_BREAD_003".to_string(),
-            upc: Some("072250015646".to_string()), // Random UPC
-            product_name: "Sourdough Bread - 24oz Loaf".to_string(),
-            product_image_url: None,
-            price_at_checkout: 3.29,
-            promo_price: None,
-            quantity: 1.0,
-            timestamp: sys_time()?.as_micros() as u64,
-            note: Some("Softest loaf available".to_string()),
-        },
-        // Product 4: Eggs
-        CartProduct {
-            product_id: "FAKE_EGGS_004".to_string(),
-            upc: Some("011110085344".to_string()), // Random UPC
-            product_name: "Free Range Large Eggs - 12 count".to_string(),
-            product_image_url: None,
-            price_at_checkout: 6.99,
-            promo_price: None,
-            quantity: 1.0,
-            timestamp: sys_time()?.as_micros() as u64,
-            note: Some("Brown eggs preferred if available".to_string()),
-        },
-        // Product 5: Bananas
-        CartProduct {
-            product_id: "FAKE_BANANAS_005".to_string(),
-            upc: Some("033383003931".to_string()), // Random UPC
-            product_name: "Organic Bananas - 3 lbs".to_string(),
-            product_image_url: None,
-            price_at_checkout: 2.99,
-            promo_price: None,
-            quantity: 1.0,
-            timestamp: sys_time()?.as_micros() as u64,
-            note: Some("Not too ripe please, yellow with slight green".to_string()),
-        },
-    ];
-    
-    // Create checkout input using our fake data
-    let checkout_input = CheckoutCartInput {
-        delivery_address: fake_address,
-        delivery_time: Some(fake_delivery_time),
-        delivery_instructions: Some("FAKE ORDER - Ring doorbell twice for testing".to_string()),
-        cart_products: Some(fake_cart_products),
-    };
-    
-    // Use the existing checkout function to create the order properly
-    let order_hash = checkout_cart_impl(checkout_input)?;
-    
-    warn!("FAKE DATA: Created fake order with hash: {:?}", order_hash);
-    warn!("FAKE DATA: Order contains butter with UPC: 767707001678");
-    warn!("FAKE DATA: Order should now appear in shopper app for testing");
-    
-    Ok(order_hash)
-}
-
-// ============================================================================
-// END FAKE DATA SECTION - REMOVE FOR PRODUCTION
-// ============================================================================
 
