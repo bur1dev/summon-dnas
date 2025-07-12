@@ -11,17 +11,32 @@ pub struct UpdateDeliveryAddressInput {
     pub new_address: Address,
 }
 
-// Add individual cart item
-#[hdk_extern]
-pub fn add_item(item: CartProduct) -> ExternResult<ActionHash> {
-    cart::add_item_impl(item)
+// Input struct for adding cart item with quantity
+#[derive(Serialize, Deserialize, Debug)]
+pub struct AddCartItemInput {
+    pub product: CartProduct,
+    pub quantity: f64,
 }
 
-// Remove individual cart item
-#[hdk_extern]
-pub fn remove_item(item_hash: ActionHash) -> ExternResult<ActionHash> {
-    cart::remove_item_impl(item_hash)
+// Input struct for removing cart item by product_id and quantity
+#[derive(Serialize, Deserialize, Debug)]
+pub struct RemoveCartItemInput {
+    pub product_id: String,
+    pub quantity: f64,
 }
+
+// OPTIMIZED: Add cart item with quantity (new recommended function)
+#[hdk_extern]
+pub fn add_cart_item(input: AddCartItemInput) -> ExternResult<ActionHash> {
+    cart::add_item_impl(input.product, input.quantity)
+}
+
+// OPTIMIZED: Remove cart item by product_id and quantity (new recommended function)  
+#[hdk_extern]
+pub fn remove_cart_item(input: RemoveCartItemInput) -> ExternResult<ActionHash> {
+    cart::remove_item_impl(input.product_id, input.quantity)
+}
+
 
 // Get all current cart items using query()
 #[hdk_extern]
