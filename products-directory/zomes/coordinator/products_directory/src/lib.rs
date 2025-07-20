@@ -27,11 +27,13 @@ pub fn get_active_catalog(_: ()) -> ExternResult<Option<String>> {
                     .map_err(|e| wasm_error!(WasmErrorInner::Guest(format!("Failed to deserialize entry: {:?}", e))))?
                     .ok_or(wasm_error!(WasmErrorInner::Guest("Entry not found".to_string())))?;
                 
+                warn!("🚨 DIRECTORY READ: Agent {} retrieved seed {}", agent_info()?.agent_initial_pubkey, entry.network_seed);
                 return Ok(Some(entry.network_seed));
             }
         }
     }
     
+    warn!("🔍 DIRECTORY READ: Agent {} found no active catalog", agent_info()?.agent_initial_pubkey);
     Ok(None)
 }
 
@@ -47,7 +49,7 @@ pub fn update_active_catalog(seed: String) -> ExternResult<ActionHash> {
     let anchor_path = Path::from("active_product_catalog");
     let anchor_hash = anchor_path.path_entry_hash()?;
     
-    // Delete old links
+    // Delete old links (only if they exist to avoid race condition)
     let existing_links = get_links(
         GetLinksInputBuilder::try_new(anchor_hash.clone(), LinkTypes::Catalog)?
             .tag_prefix(LinkTag::new("active"))
@@ -72,7 +74,7 @@ pub fn update_active_catalog(seed: String) -> ExternResult<ActionHash> {
         LinkTag::new("active")
     )?;
     
-    info!("Updated active catalog: {}", seed);
+    warn!("🚨 DIRECTORY UPDATE: Agent {} set active catalog to {}", agent_info()?.agent_initial_pubkey, seed);
     
     Ok(action_hash)
 }

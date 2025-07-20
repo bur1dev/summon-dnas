@@ -76,7 +76,6 @@ for (_i, additional) in input.additional_categorizations.iter().enumerate() {
 
 fn create_links_for_group(group_hash: &ActionHash, paths: Vec<Path>, product_count: usize) -> ExternResult<()> {
     let cell_id = get_cell_id_debug_info().unwrap_or_else(|_| "unknown".to_string());
-    warn!("📝 [WRITE] Cell ID: {} - Creating {} links for group", cell_id, paths.len());
     
     // Convert product count to bytes for LinkTag
     let count_bytes = (product_count as u32).to_le_bytes();
@@ -103,7 +102,6 @@ fn create_links_for_group(group_hash: &ActionHash, paths: Vec<Path>, product_cou
 #[hdk_extern]
 pub fn create_product_group(input: CreateProductGroupInput) -> ExternResult<ActionHash> {
     let cell_id = get_cell_id_debug_info().unwrap_or_else(|_| "unknown".to_string());
-    warn!("📝 [WRITE] Cell ID: {} - Creating product group with {} products", cell_id, input.products.len());
     
     let product_group = ProductGroup {
         category: input.category.clone(),
@@ -136,7 +134,6 @@ pub fn create_product_group(input: CreateProductGroupInput) -> ExternResult<Acti
 #[hdk_extern]
 pub fn create_product_batch(products: Vec<CreateProductInput>) -> ExternResult<Vec<Record>> {
     let cell_id = get_cell_id_debug_info().unwrap_or_else(|_| "unknown".to_string());
-    warn!("📝 [WRITE] Cell ID: {} - Creating product batch with {} products", cell_id, products.len());
     
     if products.is_empty() {
         return Ok(Vec::new());

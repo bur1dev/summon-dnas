@@ -138,8 +138,6 @@ pub fn get_products_by_category(params: GetProductsParams) -> ExternResult<Categ
 pub fn get_all_category_products(category: String) -> ExternResult<CategorizedProducts> {
     // Log the current cell info
     let current_cell_info = get_cell_id_debug_info()?;
-    warn!("[get_all_category_products] Called in cell: {}", current_cell_info);
-    warn!("[get_all_category_products] Category: {}", category);
     
     let path_str = format!("categories/{}", category);
     
@@ -270,8 +268,6 @@ pub struct PaginatedProducts {
 pub fn get_paginated_products_from_group(params: GroupProductsParams) -> ExternResult<PaginatedProducts> {
     // Log the current cell info
     let current_cell_info = get_cell_id_debug_info()?;
-    warn!("[get_paginated_products_from_group] Called in cell: {}", current_cell_info);
-    warn!("[get_paginated_products_from_group] Group hash: {:?}", params.group_hash);
     
     // Get the product group record
      let group_record = match get(params.group_hash.clone(), GetOptions::default())? {
